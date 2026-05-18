@@ -18,7 +18,6 @@ DiveEdit is released under the MIT License.
 
 - GPU acceleration is used when CUDA support is available.
 - CPU mode is used automatically when GPU mode is unavailable.
-- GPU speech analysis currently uses one worker to avoid loading multiple large Whisper models into VRAM at the same time.
 - Automatic cuts are a draft. Review the timeline before exporting.
 - Working files are stored under the selected job folder:
 

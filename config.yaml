@@ -27,7 +27,7 @@ overlay:
   logo_on_intro: true
   # Burned-in monitor regions used as guidance for OCR / overlay placement.
   monitor_avoid:
-    timestamp_top_right: { x: 1200, y: 0, w: 720, h: 160 }
+    timestamp_top_right: { x: 0, y: 0, w: 1920, h: 180 }
     cam01_bottom_left:   { x: 16,   y: 1000, w: 160, h: 48 }
 
 time:

@@ -86,9 +86,6 @@ if sys.platform == "win32" and getattr(sys, "frozen", False):
         except OSError:
             return False
 
-    _cuda_ok = _try_load_cudart()
-    _cuda_source = "system_path" if _cuda_ok else "none"
-
     def _try_register_dir(d: Path) -> bool:
         if not (d.is_dir() and (d / "cudart64_12.dll").is_file()):
             return False
@@ -99,6 +96,30 @@ if sys.platform == "win32" and getattr(sys, "frozen", False):
                 pass
         os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
         return _try_load_cudart()
+
+    def _register_spec_bundle_dirs() -> bool:
+        _meipass = getattr(sys, "_MEIPASS", None)
+        if not _meipass:
+            return False
+        _spec_root = Path(_meipass) / "nvidia"
+        any_dir = False
+        for _sub in ("cublas", "cuda_nvrtc", "cuda_runtime", "nvjitlink", "cudnn"):
+            _bd = _spec_root / _sub / "bin"
+            if _bd.is_dir():
+                any_dir = True
+                if hasattr(os, "add_dll_directory"):
+                    try:
+                        os.add_dll_directory(str(_bd))
+                    except OSError:
+                        pass
+                os.environ["PATH"] = str(_bd) + os.pathsep + os.environ.get("PATH", "")
+        return any_dir and _try_load_cudart()
+
+    # Prefer the CUDA DLL generation bundled with this build over any system
+    # CUDA on PATH. System CUDA may be a different minor version than the
+    # ctranslate2 wheel this app was frozen with.
+    _cuda_ok = _register_spec_bundle_dirs()
+    _cuda_source = "spec_bundle" if _cuda_ok else "none"
 
     if not _cuda_ok:
         # Tier 2: spec-bundled (the ~700MB cu12 DLL set the spec puts
@@ -123,6 +144,10 @@ if sys.platform == "win32" and getattr(sys, "frozen", False):
             if _try_load_cudart():
                 _cuda_ok = True
                 _cuda_source = "spec_bundle"
+
+    if not _cuda_ok:
+        _cuda_ok = _try_load_cudart()
+        _cuda_source = "system_path" if _cuda_ok else "none"
 
     if not _cuda_ok:
         # Tier 3: legacy bundled-next-to-exe location (setup-gpu.bat
