@@ -7,6 +7,7 @@ initialization cost that older per-file worker invocations paid.
 Usage:
     python -m dive_edit.analyze.whisper_batch_worker <manifest.json>
         [model] [device] [compute_gpu] [compute_cpu] [language] [prompt_file]
+        [vad] [cpu_threads]
 
 The manifest is a JSON array of `{"input": "...wav", "output": "...json"}`
 entries. For each entry, the worker writes a JSON document to the output
@@ -139,7 +140,8 @@ def main() -> int:
     if len(sys.argv) < 2:
         sys.stderr.write(
             "usage: whisper_batch_worker <manifest.json> "
-            "[model] [device] [compute_gpu] [compute_cpu] [language]\n"
+            "[model] [device] [compute_gpu] [compute_cpu] [language] "
+            "[prompt_file] [vad] [cpu_threads]\n"
         )
         return 2
 
@@ -152,6 +154,10 @@ def main() -> int:
     prompt_file = sys.argv[7] if len(sys.argv) > 7 else ""
     vad_arg = sys.argv[8] if len(sys.argv) > 8 else "off"
     vad_filter = vad_arg.lower() in ("on", "true", "1", "yes")
+    try:
+        cpu_threads = int(sys.argv[9]) if len(sys.argv) > 9 else 0
+    except ValueError:
+        cpu_threads = 0
 
     initial_prompt = ""
     if prompt_file and Path(prompt_file).exists():
@@ -221,6 +227,7 @@ def main() -> int:
         f"force_cpu={os.environ.get('DIVE_FORCE_CPU')!r} "
         f"model={model_name!r} "
         f"language={language!r} "
+        f"cpu_threads={cpu_threads} "
         f"vad={'on' if vad_filter else 'off'} "
         f"n_files={len(manifest)} "
         f"manifest_path={str(manifest_path)!r}"
@@ -240,7 +247,12 @@ def main() -> int:
         pass
 
     try:
-        model = WhisperModel(model_name, device=device, compute_type=compute_type)
+        model = WhisperModel(
+            model_name,
+            device=device,
+            compute_type=compute_type,
+            cpu_threads=cpu_threads if device == "cpu" else 0,
+        )
     except Exception as e:
         import traceback as _tb
         _emit(
@@ -255,7 +267,12 @@ def main() -> int:
                 f"compute_type={compute_cpu!r}"
             )
             device, compute_type = "cpu", compute_cpu
-            model = WhisperModel(model_name, device=device, compute_type=compute_type)
+            model = WhisperModel(
+                model_name,
+                device=device,
+                compute_type=compute_type,
+                cpu_threads=cpu_threads,
+            )
         else:
             raise
 

@@ -593,6 +593,13 @@ def _split_manifest_balanced(
     return [b for b in bins if b]
 
 
+def _auto_cpu_threads() -> int:
+    logical = os.cpu_count() or 4
+    if logical <= 4:
+        return max(1, logical)
+    return max(4, min(12, logical - 2))
+
+
 def transcribe_files_batch(
     mp4_paths: list[Path],
     cache_dir: Path,
@@ -624,6 +631,7 @@ def transcribe_files_batch(
     compute_gpu = str(whisper_cfg.get("compute_type_gpu", "int8_float16"))
     compute_cpu = str(whisper_cfg.get("compute_type_cpu", "int8"))
     language = str(whisper_cfg.get("language", "en"))
+    cpu_threads_raw = whisper_cfg.get("cpu_threads", "auto")
 
     # Frozen + no system CUDA → force CPU. Without this, ctranslate2's
     # delay-loaded cudart import crashes the whisper worker subprocess
@@ -639,6 +647,15 @@ def transcribe_files_batch(
     # collapse to 1. Server.py also clamps here as defense-in-depth.
     if requested_device == "cpu" and (n_workers or 1) > 1:
         n_workers = 1
+    if requested_device == "cpu":
+        try:
+            cpu_threads = int(cpu_threads_raw)
+        except (TypeError, ValueError):
+            cpu_threads = 0
+        if cpu_threads <= 0:
+            cpu_threads = _auto_cpu_threads()
+    else:
+        cpu_threads = 0
 
     results: dict[Path, FileTranscript] = {}
     to_transcribe: list[Path] = []
@@ -717,6 +734,7 @@ def transcribe_files_batch(
                       requested_device=requested_device,
                       compute_gpu=compute_gpu,
                       compute_cpu=compute_cpu,
+                      cpu_threads=cpu_threads,
                       language=language,
                       preprocess=preprocess,
                       cuda_status=os.environ.get("DIVE_CUDA_STATUS"),
@@ -734,6 +752,7 @@ def transcribe_files_batch(
                 language,
                 str(prompt_path),
                 vad_arg,
+                str(cpu_threads),
             ]
             # Frozen exe re-invokes itself with --whisper-batch sentinel that
             # the desktop entrypoint dispatches to whisper_batch_worker.main().
