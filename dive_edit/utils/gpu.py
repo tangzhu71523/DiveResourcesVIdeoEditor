@@ -1,15 +1,9 @@
-"""GPU 自适应：检测显存，计算最佳 Whisper worker 数。
+"""GPU worker selection for the analysis pipeline.
 
-VRAM-per-worker recalibration (2026-05-04):
-  Whisper large-v3-turbo with compute_type=int8_float16:
-    weights (int8 quantized)  ~0.7 GB
-    activations + KV cache    ~0.3 GB
-    safety margin             ~0.2 GB
-    total per worker          ~1.2 GB  (was 1.6 GB — too conservative)
-
-  WORKERS_CAP raised 5 → 8: user-tested 5+ workers on this hardware
-  without OOM; 8 is the new diminishing-returns ceiling (CPU/IO bound
-  beyond that). Adjust further only after re-testing on target hardware.
+GPU Whisper runs are process-heavy because every worker loads its own model
+copy. The packaged app therefore uses one GPU worker and lets CTranslate2
+handle device-level parallelism. CPU fallback remains single-worker to avoid
+freezing low-end office machines.
 """
 from __future__ import annotations
 
@@ -33,19 +27,18 @@ def _workers_from_free_vram_mb(
 
 
 def detect_optimal_workers() -> tuple[int, str]:
-    """探测 GPU free VRAM，返回 (worker 数, 人类可读说明).
-
-    无 NVIDIA GPU / nvidia-smi 不可用 → (1, '...').
-    有 GPU → workers = min(WORKERS_CAP, max(1, free_GB / _VRAM_PER_WORKER_GB)).
-    """
+    """Detect free GPU VRAM and return an informational worker estimate."""
     if not shutil.which("nvidia-smi"):
         return 1, "nvidia-smi not found -> CPU single worker"
     try:
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, check=True, timeout=5,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
         )
-        # 取第一张 GPU 的 free MB
+        # Use the first GPU because the app does not expose device picking yet.
         free_mb = int(out.stdout.strip().splitlines()[0])
         free_gb = free_mb / 1024.0
         workers = _workers_from_free_vram_mb(free_mb, cap=_WORKERS_CAP)
@@ -62,8 +55,7 @@ def select_pipeline_workers(
     """Return the worker count the backend should pass to the pipeline.
 
     Packaged exe startup writes DIVE_* status variables after probing CUDA DLLs.
-    Dev mode may leave them unset, so an unset CUDA status must not force CPU;
-    the live VRAM detector remains the source of truth in that case.
+    Dev mode may leave them unset, so an unset CUDA status must not force CPU.
     """
     status = env if env is not None else {}
     force_cpu = status.get("DIVE_FORCE_CPU") == "1"
@@ -76,4 +68,6 @@ def select_pipeline_workers(
     if cudnn_status.startswith("missing"):
         return 1, f"cuDNN unavailable: {cudnn_status}"
     auto_workers, msg = detector()
-    return max(1, int(auto_workers or 1)), msg
+    if auto_workers > 1:
+        return 1, f"{msg} | GPU worker capped at 1"
+    return 1, msg
