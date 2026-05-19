@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import os
+import shutil
+from pathlib import Path
 
 
 MODEL_REPOS = {
@@ -42,6 +45,21 @@ def main() -> int:
         from huggingface_hub import snapshot_download
 
     path = snapshot_download(repo_id=repo)
+    root = Path(path)
+    for item in root.iterdir():
+        if not item.is_symlink():
+            continue
+        target = item.resolve(strict=True)
+        tmp = item.with_name(f"{item.name}.diveedit.tmp")
+        if tmp.exists():
+            tmp.unlink()
+        shutil.copy2(target, tmp)
+        item.unlink()
+        os.replace(tmp, item)
+
+    model_bin = root / "model.bin"
+    if not model_bin.is_file() or model_bin.stat().st_size <= 0:
+        raise RuntimeError(f"model cache is incomplete: {model_bin}")
     print(f"downloaded to {path}")
     return 0
 

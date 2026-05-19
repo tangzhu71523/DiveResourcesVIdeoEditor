@@ -162,6 +162,38 @@ function Resolve-ModelRepo($tier) {
     }
 }
 
+function Test-WhisperSnapshotReady($snapDir) {
+    $required = @("model.bin", "config.json")
+    foreach ($f in $required) {
+        $path = Join-Path $snapDir $f
+        $item = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue
+        if (-not $item -or $item.Length -le 0) { return $false }
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            return $false
+        }
+    }
+
+    $tokenizerFiles = @("tokenizer.json", "vocabulary.json", "vocabulary.txt")
+    foreach ($f in $tokenizerFiles) {
+        $path = Join-Path $snapDir $f
+        $item = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue
+        if ($item -and $item.Length -gt 0 -and (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Test-WhisperModelReady($modelDir) {
+    $snapRoot = Join-Path $modelDir "snapshots"
+    if (-not (Test-Path $snapRoot)) { return $false }
+    $snaps = Get-ChildItem -Path $snapRoot -Directory -ErrorAction SilentlyContinue
+    foreach ($snap in $snaps) {
+        if (Test-WhisperSnapshotReady $snap.FullName) { return $true }
+    }
+    return $false
+}
+
 function Test-CudaRuntimeReady {
     $expectedRuntime = Get-CudaRuntimeVersionStamp
     $dirs = @()
@@ -296,12 +328,11 @@ function Download-WhisperModel($tier) {
     $cacheRoot = Join-Path $env:USERPROFILE ".cache\huggingface\hub"
     $modelDir = Join-Path $cacheRoot ("models--" + $repo.Replace("/", "--"))
 
-    if (Test-Path (Join-Path $modelDir "snapshots")) {
-        $snap = Get-ChildItem -Path (Join-Path $modelDir "snapshots") -Directory | Select-Object -First 1
-        if ($snap -and (Test-Path (Join-Path $snap.FullName "model.bin"))) {
-            Write-Ok "$repo already cached"
-            return
-        }
+    if (Test-WhisperModelReady $modelDir) {
+        Write-Ok "$repo already cached"
+        return
+    } elseif (Test-Path (Join-Path $modelDir "snapshots")) {
+        Write-Warn2 "$repo cache exists but is incomplete or link-based; repairing"
     }
 
     Write-Step "downloading $repo to HuggingFace cache"
@@ -310,30 +341,33 @@ function Download-WhisperModel($tier) {
     $appExe = Join-Path $InstallDir "DiveEdit.exe"
     if (Test-Path $appExe) {
         $code = Invoke-ProcessWithTimeout $appExe @("--download-model", $repo) 3600
-        if ($code -eq 0) {
+        if ($code -eq 0 -and (Test-WhisperModelReady $modelDir)) {
             Write-Ok "$repo ready"
             return
         }
-        Write-Warn2 "bundled downloader failed; trying fallback paths"
+        Write-Warn2 "bundled downloader failed or cache is not usable; trying fallback paths"
     }
 
     $helper = Join-Path $PSScriptRoot "download_model.py"
     $sysPy = Get-Command python -ErrorAction SilentlyContinue
     if ($sysPy -and (Test-Path $helper)) {
         & $sysPy.Source $helper $repo
-        if ($LASTEXITCODE -eq 0) {
+        if ($LASTEXITCODE -eq 0 -and (Test-WhisperModelReady $modelDir)) {
             Write-Ok "$repo ready"
             return
         }
-        Write-Warn2 "system Python downloader failed; trying direct HTTPS fallback"
+        Write-Warn2 "system Python downloader failed or cache is not usable; trying direct HTTPS fallback"
     }
 
     Download-WhisperModelDirect $repo $modelDir
+    if (-not (Test-WhisperModelReady $modelDir)) {
+        throw "$repo cache is not usable after download"
+    }
     Write-Ok "$repo ready"
 }
 
 function Download-WhisperModelDirect($repo, $modelDir) {
-    $files = @("config.json", "model.bin", "tokenizer.json", "vocabulary.txt", "preprocessor_config.json")
+    $files = @("config.json", "model.bin", "tokenizer.json", "vocabulary.json", "vocabulary.txt", "preprocessor_config.json")
     $base = "https://huggingface.co/$repo/resolve/main"
     $snapDir = Join-Path $modelDir "snapshots\main"
     New-Item -ItemType Directory -Force -Path $snapDir | Out-Null
