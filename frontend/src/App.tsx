@@ -1352,16 +1352,25 @@ export default function App() {
     } catch {
       runSystemInfo = systemInfo
     }
-    const runWorkers = runSystemInfo
-      ? (runSystemInfo.force_cpu
-          || runSystemInfo.cuda_status === 'none'
-          || runSystemInfo.cudnn_status.startsWith('missing')
-        ? 1
-        : Math.max(1, runSystemInfo.workers_cap))
-      : 1
+    const runWorkers = runSystemInfo ? Math.max(1, runSystemInfo.workers_cap) : 1
+    const runMode = runSystemInfo && !runSystemInfo.force_cpu
+      && runSystemInfo.cuda_runtime_ok
+      && runSystemInfo.cuda_status !== 'none'
+      && !runSystemInfo.cudnn_status.startsWith('missing')
+      ? 'gpu'
+      : 'cpu'
+    const runDetail = runSystemInfo
+      ? (runMode === 'gpu'
+          ? runSystemInfo.gpu_msg
+          : runSystemInfo.force_cpu
+            ? (runSystemInfo.gpu_available ? 'GPU available but CPU mode is forced' : 'CPU mode is forced')
+            : runSystemInfo.gpu_available
+              ? 'GPU detected but runtime is unavailable; using CPU mode'
+              : 'No usable GPU detected; using CPU mode')
+      : ''
     const initialLogs = runSystemInfo
       ? [
-          `[system] CUDA=${runSystemInfo.cuda_status} cuDNN=${runSystemInfo.cudnn_status} forceCPU=${String(runSystemInfo.force_cpu)} workers=${runWorkers} ${runSystemInfo.gpu_msg}`,
+          `[system] mode=${runMode} workers=${runWorkers} gpu=${runSystemInfo.gpu_available ? 'available' : 'not_available'} detail=${runDetail}`,
         ]
       : ['[system] hardware check unavailable']
     setLogs(initialLogs)

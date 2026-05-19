@@ -61,3 +61,6 @@ dev/
 tests/
 *.bat
 .runtime-stress-venv/
+_bench_*/
+_scratch_*/
+_release_gate_*/

@@ -94,10 +94,35 @@ if sys.platform == "win32" and getattr(sys, "frozen", False):
         os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
         return _try_load_cudart()
 
+    def _ct2_cuda_probe_ok() -> tuple[bool, str]:
+        if len(sys.argv) > 1 and sys.argv[1] == "--cuda-probe":
+            return True, "probe_child"
+        try:
+            probe = subprocess.run(
+                [sys.executable, "--cuda-probe"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=20,
+            )
+        except Exception as e:  # noqa: BLE001
+            return False, f"probe_error:{type(e).__name__}:{e}"
+        detail = (probe.stdout or probe.stderr or "").strip().replace("\r", " ").replace("\n", " ")
+        if probe.returncode != 0:
+            return False, f"probe_exit:{probe.returncode}:{detail[:240]}"
+        return True, detail[:240] or "ok"
+
     _cuda_ok = False
     _cuda_source = "none"
+    _force_cpu_requested = os.environ.get("DIVE_FORCE_CPU") == "1"
 
-    if not _cuda_ok:
+    if _force_cpu_requested:
+        _cuda_source = "forced_cpu"
+        os.environ["DIVE_CUDNN_STATUS"] = "skipped"
+
+    if not _cuda_ok and not _force_cpu_requested:
         # Tier 1: pinned runtime prepared by setup bootstrap.
         _appdata = os.environ.get("LOCALAPPDATA")
         if _appdata:
@@ -106,7 +131,7 @@ if sys.platform == "win32" and getattr(sys, "frozen", False):
                 _cuda_ok = True
                 _cuda_source = "persistent"
 
-    if not _cuda_ok:
+    if not _cuda_ok and not _force_cpu_requested:
         # Tier 2: legacy bundled-next-to-exe location (setup-gpu.bat
         # against InstallDir, pre-LOCALAPPDATA migration).
         _exe_dir = Path(sys.executable).resolve().parent
@@ -114,7 +139,7 @@ if sys.platform == "win32" and getattr(sys, "frozen", False):
             _cuda_ok = True
             _cuda_source = "bundled"
 
-    if not _cuda_ok:
+    if not _cuda_ok and not _force_cpu_requested:
         _cuda_ok = _try_load_cudart()
         _cuda_source = "system_path" if _cuda_ok else "none"
 
@@ -158,9 +183,15 @@ if sys.platform == "win32" and getattr(sys, "frozen", False):
                 _gpu_missing.append(_dll)
         if _gpu_missing:
             os.environ["DIVE_FORCE_CPU"] = "1"
+            os.environ["DIVE_CUDA_STATUS"] = "none"
             os.environ["DIVE_CUDNN_STATUS"] = "missing:" + ",".join(_gpu_missing)
         else:
             os.environ["DIVE_CUDNN_STATUS"] = "ok"
+            _ct2_ok, _ct2_detail = _ct2_cuda_probe_ok()
+            os.environ["DIVE_CUDA_PROBE"] = _ct2_detail
+            if not _ct2_ok:
+                os.environ["DIVE_FORCE_CPU"] = "1"
+                os.environ["DIVE_CUDA_STATUS"] = "none"
 
 
 def _strip_sentinel(flag: str) -> None:
@@ -178,7 +209,13 @@ def _run_pipeline() -> int:
 def _run_whisper_batch() -> int:
     _strip_sentinel("--whisper-batch")
     from dive_edit.analyze.whisper_batch_worker import main
-    return main()
+    rc = main()
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(rc)
 
 
 def _run_download_model() -> int:
@@ -195,6 +232,20 @@ def _run_download_model() -> int:
     except Exception as e:  # noqa: BLE001
         print(f"model download failed: {e}", file=sys.stderr, flush=True)
         return 1
+
+
+def _run_cuda_probe() -> int:
+    try:
+        import ctranslate2  # type: ignore
+        count = int(ctranslate2.get_cuda_device_count())
+    except Exception as e:  # noqa: BLE001
+        print(f"ct2_probe_failed:{type(e).__name__}:{e}", file=sys.stderr, flush=True)
+        return 1
+    if count <= 0:
+        print("ct2_cuda_devices=0", flush=True)
+        return 1
+    print(f"ct2_cuda_devices={count}", flush=True)
+    return 0
 
 
 def _pick_free_port(preferred: int = 8001) -> int:
@@ -410,6 +461,8 @@ def main() -> int:
         return _run_whisper_batch()
     if first == "--download-model":
         return _run_download_model()
+    if first == "--cuda-probe":
+        return _run_cuda_probe()
     return _run_gui()
 
 

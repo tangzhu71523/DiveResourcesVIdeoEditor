@@ -54,6 +54,100 @@ function Write-Ok($msg)   { Write-Host "    [ok] $msg" -ForegroundColor Green }
 function Write-Warn2($msg){ Write-Host "    [warn] $msg" -ForegroundColor Yellow }
 function Write-Err($msg)  { Write-Host "    [err] $msg" -ForegroundColor Red }
 
+function Invoke-DownloadFile($url, $out, $timeoutSec = 600) {
+    $tmp = "$out.part"
+    if (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Force }
+    if (Test-Path $out) { Remove-Item -LiteralPath $out -Force }
+
+    $request = [System.Net.HttpWebRequest]::Create($url)
+    $request.Timeout = [Math]::Max(30, $timeoutSec) * 1000
+    $request.ReadWriteTimeout = 60000
+    $request.UserAgent = "DiveEdit-Setup"
+    $response = $null
+    $inputStream = $null
+    $fileStream = $null
+    try {
+        $response = $request.GetResponse()
+        $inputStream = $response.GetResponseStream()
+        $fileStream = [System.IO.File]::Open($tmp, [System.IO.FileMode]::CreateNew)
+        $buffer = New-Object byte[] (1024 * 1024)
+        while ($true) {
+            $read = $inputStream.Read($buffer, 0, $buffer.Length)
+            if ($read -le 0) { break }
+            $fileStream.Write($buffer, 0, $read)
+        }
+    } finally {
+        if ($fileStream) { $fileStream.Dispose() }
+        if ($inputStream) { $inputStream.Dispose() }
+        if ($response) { $response.Dispose() }
+    }
+
+    $item = Get-Item -LiteralPath $tmp -ErrorAction SilentlyContinue
+    if (-not $item -or $item.Length -le 0) {
+        if (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Force }
+        throw "download produced an empty file"
+    }
+    Move-Item -LiteralPath $tmp -Destination $out -Force
+}
+
+function Invoke-ProcessWithTimeout($exe, [string[]]$args, $timeoutSec = 3600) {
+    $p = Start-Process -FilePath $exe -ArgumentList $args -Wait:$false -PassThru -WindowStyle Hidden
+    if (-not $p.WaitForExit([Math]::Max(30, $timeoutSec) * 1000)) {
+        try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch {}
+        throw "process timed out after ${timeoutSec}s: $exe"
+    }
+    return $p.ExitCode
+}
+
+function Get-FreeGbForPath($path) {
+    try {
+        $root = [System.IO.Path]::GetPathRoot($path)
+        if ([string]::IsNullOrWhiteSpace($root)) { return $null }
+        $drive = New-Object System.IO.DriveInfo($root)
+        return [math]::Round($drive.AvailableFreeSpace / 1GB, 1)
+    } catch {
+        return $null
+    }
+}
+
+function Check-DiskSpaceNotice {
+    $smi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+    $needsGpuAssets = ($null -ne $smi) -and (-not $SkipCudaRuntime)
+    $recommendedGb = if ($needsGpuAssets) { 10.0 } else { 6.0 }
+    $cacheRoot = Join-Path $env:USERPROFILE ".cache\huggingface\hub"
+    $localRoot = Join-Path $env:LOCALAPPDATA "DiveEdit"
+    $paths = @($InstallDir, $env:TEMP, $cacheRoot, $localRoot) | Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_)
+    }
+
+    Write-Step "disk space check"
+    Write-Ok "recommended free space: ${recommendedGb}GB minimum"
+    if ($needsGpuAssets) {
+        Write-Ok "NVIDIA GPU detected: CUDA/cuDNN runtime and Whisper model may be downloaded"
+    } else {
+        Write-Ok "CPU setup: Whisper model and ffmpeg assets may be downloaded"
+    }
+
+    $seen = @{}
+    foreach ($p in $paths) {
+        try {
+            $root = [System.IO.Path]::GetPathRoot($p)
+        } catch {
+            continue
+        }
+        if ([string]::IsNullOrWhiteSpace($root) -or $seen.ContainsKey($root)) { continue }
+        $seen[$root] = $true
+        $freeGb = Get-FreeGbForPath $p
+        if ($null -eq $freeGb) {
+            Write-Warn2 "could not check free space for $root"
+        } elseif ($freeGb -lt $recommendedGb) {
+            Write-Warn2 "$root has ${freeGb}GB free; recommended minimum is ${recommendedGb}GB"
+        } else {
+            Write-Ok "$root free space: ${freeGb}GB"
+        }
+    }
+}
+
 function Resolve-ModelRepo($tier) {
     switch ($tier) {
         "large-v3-turbo" { return "mobiuslabsgmbh/faster-whisper-large-v3-turbo" }
@@ -173,7 +267,7 @@ function Ensure-Ffmpeg {
     Write-Step "downloading ffmpeg essentials build (~50MB)"
     $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
     $tmp = Join-Path $env:TEMP "ffmpeg.zip"
-    Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+    Invoke-DownloadFile $url $tmp 600
     $extract = Join-Path $env:TEMP "ffmpeg-extract"
     if (Test-Path $extract) { Remove-Item -Recurse -Force $extract }
     Expand-Archive -Path $tmp -DestinationPath $extract -Force
@@ -215,8 +309,8 @@ function Download-WhisperModel($tier) {
 
     $appExe = Join-Path $InstallDir "DiveEdit.exe"
     if (Test-Path $appExe) {
-        & $appExe --download-model $repo
-        if ($LASTEXITCODE -eq 0) {
+        $code = Invoke-ProcessWithTimeout $appExe @("--download-model", $repo) 3600
+        if ($code -eq 0) {
             Write-Ok "$repo ready"
             return
         }
@@ -248,7 +342,7 @@ function Download-WhisperModelDirect($repo, $modelDir) {
         $url = "$base/$f"
         $out = Join-Path $snapDir $f
         try {
-            Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+            Invoke-DownloadFile $url $out 900
             Write-Ok "  $f"
         } catch {
             if ($f -eq "vocabulary.txt" -or $f -eq "preprocessor_config.json") {
@@ -314,7 +408,7 @@ function Download-CudaRuntime {
             $size = [math]::Round($candidates[0].size / 1MB, 1)
             Write-Ok "  $pkg $version (${size}MB)"
             $whl = Join-Path $env:TEMP "$pkg-$version.whl"
-            Invoke-WebRequest -Uri $url -OutFile $whl -UseBasicParsing -TimeoutSec 600
+            Invoke-DownloadFile $url $whl 900
 
             $extractDir = Join-Path $env:TEMP "extract_$pkg-$version"
             if (Test-Path $extractDir) { Remove-Item -Recurse -Force $extractDir }
@@ -351,6 +445,7 @@ try {
     Write-Ok "install dir: $InstallDir"
     Write-Ok "log file: $script:LogPath"
     Write-Ok "customer machine does not need Python or a virtual environment"
+    Check-DiskSpaceNotice
 
     Ensure-Ffmpeg
     Check-OneOCR

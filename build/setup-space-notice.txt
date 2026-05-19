@@ -1,0 +1,14 @@
+DiveEdit first-run setup needs free disk space for external runtime assets.
+
+Recommended before continuing:
+
+- CPU-only computers: at least 6 GB free on the Windows user/cache drive.
+- NVIDIA GPU computers: at least 10 GB free, because setup may download CUDA/cuDNN runtime files and a Whisper speech model.
+
+Setup may download:
+
+- ffmpeg video tools
+- CUDA/cuDNN runtime files for GPU acceleration, when an NVIDIA GPU is detected
+- a faster-whisper speech model
+
+These assets are cached so reinstalling is faster. If the computer has limited space, free disk space first or skip first-run setup and prepare the assets later.

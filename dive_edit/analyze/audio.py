@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..utils.gpu import detect_cpu_workers
+
 
 @dataclass(frozen=True)
 class SegmentMeta:
@@ -593,11 +595,15 @@ def _split_manifest_balanced(
     return [b for b in bins if b]
 
 
-def _auto_cpu_threads() -> int:
+def _auto_cpu_threads(worker_count: int = 1) -> int:
     logical = os.cpu_count() or 4
+    worker_count = max(1, int(worker_count or 1))
     if logical <= 4:
-        return max(1, logical)
-    return max(4, min(12, logical - 2))
+        return max(1, logical // worker_count)
+    reserve = 2 if logical >= 8 else 1
+    usable = max(1, logical - reserve)
+    per_worker = max(1, usable // worker_count)
+    return max(2, min(24, per_worker))
 
 
 def transcribe_files_batch(
@@ -612,7 +618,7 @@ def transcribe_files_batch(
     n_workers: int = 1,
     logger=None,
 ) -> dict[Path, FileTranscript]:
-    """Transcribe every file in ``mp4_paths`` with one batched subprocess.
+    """Transcribe every file in ``mp4_paths`` with isolated batch workers.
 
     - Cached transcripts are loaded up front and skipped.
     - Audio is preprocessed with the default filter chain (see
@@ -640,22 +646,11 @@ def transcribe_files_batch(
     if os.environ.get("DIVE_FORCE_CPU") == "1" and requested_device != "cpu":
         requested_device = "cpu"
 
-    # Hard worker cap on CPU. Each whisper subprocess loads ~3GB of
-    # weights AND saturates every CPU core; running >1 back-to-back
-    # makes the host unresponsive in seconds. Caller may have asked
-    # for N (frontend stepper or auto detect), but on CPU we always
-    # collapse to 1. Server.py also clamps here as defense-in-depth.
-    if requested_device == "cpu" and (n_workers or 1) > 1:
-        n_workers = 1
+    cpu_worker_msg = ""
     if requested_device == "cpu":
-        try:
-            cpu_threads = int(cpu_threads_raw)
-        except (TypeError, ValueError):
-            cpu_threads = 0
-        if cpu_threads <= 0:
-            cpu_threads = _auto_cpu_threads()
-    else:
-        cpu_threads = 0
+        cpu_worker_cap, cpu_worker_msg = detect_cpu_workers()
+        n_workers = max(1, min(int(n_workers or 1), cpu_worker_cap))
+    cpu_threads = 0
 
     results: dict[Path, FileTranscript] = {}
     to_transcribe: list[Path] = []
@@ -726,6 +721,16 @@ def transcribe_files_batch(
         shards = _split_manifest_balanced(manifest, actual_workers)
         actual_workers = len(shards)  # may shrink if files were too few
 
+        if requested_device == "cpu":
+            try:
+                cpu_threads = int(cpu_threads_raw)
+            except (TypeError, ValueError):
+                cpu_threads = 0
+            if cpu_threads <= 0:
+                cpu_threads = _auto_cpu_threads(actual_workers)
+        else:
+            cpu_threads = 0
+
         if logger:
             logger.kv("[whisper-batch] config",
                       n_files=len(manifest),
@@ -738,7 +743,9 @@ def transcribe_files_batch(
                       language=language,
                       preprocess=preprocess,
                       cuda_status=os.environ.get("DIVE_CUDA_STATUS"),
-                      force_cpu=os.environ.get("DIVE_FORCE_CPU"))
+                      force_cpu=os.environ.get("DIVE_FORCE_CPU"),
+                      batch_workers_enabled=(actual_workers > 1),
+                      cpu_worker_msg=cpu_worker_msg)
 
         vad_arg = "on" if str(whisper_cfg.get("vad", "off")).lower() in ("on", "true", "1", "yes") else "off"
 
@@ -836,6 +843,8 @@ def transcribe_files_batch(
                             continue
                         with stderr_lock:
                             stderr_lines.append((idx, line))
+                        if logger:
+                            logger.debug(f"[w{idx+1}] stderr: {line}")
                         m = _RE_FILE_TOTAL.search(line)
                         if m:
                             wav_name = m.group(1)
@@ -883,11 +892,12 @@ def transcribe_files_batch(
                 th.join(timeout=2.0)
             agg_thread.join(timeout=2.0)
 
-            # Now drain everything we captured, in arrival order.
+            # Drain only when no structured logger is attached. With a logger,
+            # worker records are already written live above so one-minute
+            # benchmark runs can show whether time is going into model load or
+            # transcription instead of waiting until the worker exits.
             for idx, line in stderr_lines:
-                if logger:
-                    logger.debug(f"[w{idx+1}] stderr: {line}")
-                else:
+                if not logger:
                     sys.stderr.write(f"  [w{idx+1}] {line}\n")
             if stderr_lines:
                 sys.stderr.flush()
@@ -1207,9 +1217,9 @@ def auto_detect_intro_file_from_transcripts(
     user-supplied title text. Reasoning: cover content is what the diver said
     verbally, so it's the most reliable intro signal.
 
-    Among files meeting threshold, the earliest file wins. This matches the
-    burned-in timestamp invariant: once the report starts, following files must
-    move forward in time. Later high scores are often Whisper hallucinations.
+    Among files meeting threshold, highest score wins. Earliest file is only a
+    tie-breaker so repeated title-report mentions do not beat the strongest
+    actual cover/title match.
     Company name keywords get 3x weight (rare in normal speech).
     """
     if not candidates or not cover_lines:
@@ -1252,19 +1262,21 @@ def auto_detect_intro_file_from_transcripts(
     for try_threshold in (min_score, 2, 1):
         qualifying = [(f, s, kws) for f, s, kws in results if s >= try_threshold]
         if qualifying:
-            qualifying.sort(key=lambda x: (file_order.get(x[0], 0), -x[1]))
+            qualifying.sort(key=lambda x: (-x[1], file_order.get(x[0], 0)))
             picked = qualifying[0]
-            highest = max(qualifying, key=lambda x: (x[1], -file_order.get(x[0], 0)))
             if logger and try_threshold < min_score:
                 logger.warn(
                     f"  ⚠️ INTRO threshold relaxed to {try_threshold} to match: "
                     f"{picked[0].name} (score={picked[1]})"
                 )
-            if logger and highest[0] != picked[0]:
+            tied = [
+                q for q in qualifying
+                if q[1] == picked[1] and q[0] != picked[0]
+            ]
+            if logger and tied:
                 logger.warn(
-                    f"  INTRO picked earliest qualifying file {picked[0].name} "
-                    f"(score={picked[1]}); later higher score {highest[0].name} "
-                    f"(score={highest[1]}) treated as lower trust."
+                    f"  INTRO score tie resolved by earliest file: "
+                    f"{picked[0].name} (score={picked[1]})"
                 )
             return IntroDetectionResult(
                 file=picked[0],

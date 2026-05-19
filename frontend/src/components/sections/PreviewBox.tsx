@@ -1199,10 +1199,10 @@ export default function PreviewBox({
               const isArmed = armed === 'logo'
               const baseHeightPct = (110 / 1080) * 100 * lo.scale
               const baseTopPct = (27 / 1080) * 100
-              const baseRightPct = (40 / 1080) * 100
-              // position_x/y are 1080-baseline px; convert to cqh via /1080*100.
+              const baseRightPct = (40 / 1920) * 100
+              // position_x/y use the actual video-area baseline, matching text overlays.
               const offTopPct = (lo.position_y / 1080) * 100
-              const offRightPct = (lo.position_x / 1080) * 100
+              const offRightPct = (lo.position_x / 1920) * 100
               const startLogoBodyDrag = (e: React.MouseEvent) => {
                 if (!onLogoOverlayChange) return
                 e.stopPropagation(); e.preventDefault()
@@ -1210,10 +1210,11 @@ export default function PreviewBox({
                 const ox = lo.position_x, oy = lo.position_y
                 const area = (e.currentTarget as HTMLElement).closest('[data-preview-area]') as HTMLElement | null
                 const rect = area?.getBoundingClientRect()
-                const scale = rect ? 1080 / rect.height : 1
+                const scaleX = rect ? 1920 / rect.width : 1
+                const scaleY = rect ? 1080 / rect.height : 1
                 const onMove = (ev: MouseEvent) => {
-                  const dx = (ev.clientX - startX) * scale
-                  const dy = (ev.clientY - startY) * scale
+                  const dx = (ev.clientX - startX) * scaleX
+                  const dy = (ev.clientY - startY) * scaleY
                   onLogoOverlayChange({
                     position_x: Math.round(ox - dx),  // dragging right ↑ should move logo right (= less right offset)
                     position_y: Math.round(oy + dy),
@@ -1269,7 +1270,7 @@ export default function PreviewBox({
                   className="absolute z-15"
                   style={{
                     top: `calc(${baseTopPct}cqh + ${offTopPct}cqh)`,
-                    right: `calc(${baseRightPct}cqh + ${offRightPct}cqh)`,
+                    right: `calc(${baseRightPct}cqw + ${offRightPct}cqw)`,
                     height: `${baseHeightPct}cqh`,
                     cursor: isArmed ? 'move' : 'pointer',
                     pointerEvents: 'auto',

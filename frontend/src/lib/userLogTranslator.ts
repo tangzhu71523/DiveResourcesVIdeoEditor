@@ -65,6 +65,22 @@ interface PatternEntry {
 
 const PATTERNS: PatternEntry[] = [
   {
+    re: /\[system\]\s+mode=(cpu|gpu)\s+workers=(\d+)\s+gpu=(available|not_available)\s+detail=(.+)/i,
+    render: (m) => {
+      const mode = m[1].toLowerCase()
+      const detail = m[4].trim()
+      return {
+        indent: 'main',
+        severity: mode === 'cpu' && m[3] === 'available' ? 'warn' : 'info',
+        tokens: [
+          v('System'), p(': '), n(mode === 'gpu' ? 'GPU mode' : 'CPU mode'),
+          p(' | workers '), n(m[2]),
+          p(' | '), mode === 'cpu' ? w(detail) : p(detail),
+        ],
+      }
+    },
+  },
+  {
     re: /\[system\]\s+CUDA=([^\s]+)\s+cuDNN=([^\s]+)\s+forceCPU=([^\s]+)\s+workers=(\d+)\s+(.+)/i,
     render: (m) => ({
       indent: 'main',

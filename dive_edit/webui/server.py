@@ -73,6 +73,12 @@ class OverlayElementDto(BaseModel):
     box_width: float = 100.0
 
 
+class LogoOverlayDto(BaseModel):
+    position_x: float = 0.0
+    position_y: float = 0.0
+    scale: float = 1.0
+
+
 class JobMetaDto(BaseModel):
     job_no: str = ""
     vessel: str = ""
@@ -92,6 +98,7 @@ class JobMetaDto(BaseModel):
         position_x=0.0, position_y=0.0, scale_x=1.0, scale_y=1.0,
         whole_scale=1.0,
     ))
+    logo_overlay: LogoOverlayDto = Field(default_factory=LogoOverlayDto)
     overlay_enabled: bool = True
 
 
@@ -711,6 +718,7 @@ def api_health() -> dict[str, Any]:
     # Re-detect every call so freed VRAM (closed other GPU apps) bumps
     # the cap up; previously frozen at module import → cap got stuck.
     auto_workers, gpu_msg = detect_optimal_workers()
+    selected_workers, selected_msg = select_pipeline_workers(env=os.environ)
     gpu_available = auto_workers > 1
     # cuda_runtime_ok = whether ctranslate2 can actually run on GPU.
     # Distinct from gpu_available (which only means nvidia-smi sees a
@@ -732,9 +740,9 @@ def api_health() -> dict[str, Any]:
         "cuda_status": os.environ.get("DIVE_CUDA_STATUS", "unset"),
         "cudnn_status": os.environ.get("DIVE_CUDNN_STATUS", "unset"),
         "force_cpu": os.environ.get("DIVE_FORCE_CPU") == "1",
-        "auto_workers": auto_workers,
-        "workers_cap": auto_workers,  # = VRAM-derived limit; frontend stepper.max
-        "gpu_msg": gpu_msg,
+        "auto_workers": selected_workers,
+        "workers_cap": selected_workers,
+        "gpu_msg": selected_msg if selected_msg else gpu_msg,
     }
 
 

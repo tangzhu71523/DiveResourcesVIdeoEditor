@@ -74,6 +74,30 @@ class OverlayElement:
         )
 
 
+@dataclass
+class LogoOverlay:
+    position_x: float = 0.0
+    position_y: float = 0.0
+    scale: float = 1.0
+
+    def to_dict(self) -> dict[str, float]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any] | None, *, default: "LogoOverlay") -> "LogoOverlay":
+        if not isinstance(d, dict):
+            return LogoOverlay(
+                position_x=default.position_x,
+                position_y=default.position_y,
+                scale=default.scale,
+            )
+        return cls(
+            position_x=float(d.get("position_x", default.position_x)),
+            position_y=float(d.get("position_y", default.position_y)),
+            scale=float(d.get("scale", default.scale)),
+        )
+
+
 _DEFAULT_COVER_OVERLAY = OverlayElement(
     font_size=44.0, line_spacing=16.0, letter_spacing=2.0,
     position_x=0.0, position_y=0.0, scale_x=1.0, scale_y=1.0,
@@ -84,6 +108,7 @@ _DEFAULT_SMALL_OVERLAY = OverlayElement(
     position_x=0.0, position_y=0.0, scale_x=1.0, scale_y=1.0,
     whole_scale=1.0, box_width=50.0,
 )
+_DEFAULT_LOGO_OVERLAY = LogoOverlay(position_x=0.0, position_y=0.0, scale=1.0)
 
 
 @dataclass
@@ -122,6 +147,11 @@ class JobMeta:
         whole_scale=_DEFAULT_SMALL_OVERLAY.whole_scale,
         box_width=_DEFAULT_SMALL_OVERLAY.box_width,
     ))
+    logo_overlay: LogoOverlay = field(default_factory=lambda: LogoOverlay(
+        position_x=_DEFAULT_LOGO_OVERLAY.position_x,
+        position_y=_DEFAULT_LOGO_OVERLAY.position_y,
+        scale=_DEFAULT_LOGO_OVERLAY.scale,
+    ))
     # Master switch: False skips title, watermark, and logo during export.
     overlay_enabled: bool = True
 
@@ -149,6 +179,7 @@ class JobMeta:
             intro_speech_override=override,
             cover_overlay=OverlayElement.from_dict(d.get("cover_overlay"), default=_DEFAULT_COVER_OVERLAY),
             small_overlay=OverlayElement.from_dict(d.get("small_overlay"), default=_DEFAULT_SMALL_OVERLAY),
+            logo_overlay=LogoOverlay.from_dict(d.get("logo_overlay"), default=_DEFAULT_LOGO_OVERLAY),
             overlay_enabled=bool(d.get("overlay_enabled", True)),
         )
 

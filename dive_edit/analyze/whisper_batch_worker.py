@@ -341,9 +341,29 @@ def main() -> int:
         f"[w pid={pid}] done total_s={total_dt:.2f} "
         f"n_files={len(manifest)} device={device!r}"
     )
-    del model
-    return 0
+    if _log_fp is not None:
+        try:
+            _log_fp.flush()
+            _log_fp.close()
+        except OSError:
+            pass
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    # On Windows + CUDA, CTranslate2 can crash while Python unwinds the
+    # WhisperModel object after all output files are already written.
+    # Exit before object teardown so the parent sees the successful worker
+    # result instead of rc=0xC0000409.
+    os._exit(0)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    rc = main()
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(rc)

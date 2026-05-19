@@ -34,6 +34,7 @@ from .picker import pick_job_folder, pick_intro_file, list_with_durations, probe
 from .metadata import JobMeta
 from .utils.paths import build_output_name, ensure_job_subdirs, list_mp4s
 from .utils.logging import JobLogger
+from .utils.perf_monitor import PipelinePerfMonitor
 from .render.time_config import TimeConfig
 from .analyze.audio import (
     locate_intro_speech_from_words,
@@ -690,6 +691,7 @@ def run_pipeline(
         job_folder=job_folder,
         cover_overlay=meta.cover_overlay.to_dict() if meta.cover_overlay else None,
         small_overlay=meta.small_overlay.to_dict() if meta.small_overlay else None,
+        logo_overlay=meta.logo_overlay.to_dict() if meta.logo_overlay else None,
         overlay_enabled=overlay_on,
     )
     stage_times["render"] = time.time() - t0
@@ -752,7 +754,9 @@ def main() -> int:
 
     paths = ensure_job_subdirs(job_folder)
     logger = JobLogger(log_file=paths["logs"] / "run.log")
+    perf_monitor = PipelinePerfMonitor(paths["logs"] / "perf.jsonl")
     try:
+        perf_monitor.start()
         banner("Starting...")
         rc = run_pipeline(
             job_folder=job_folder, meta=meta,
@@ -763,6 +767,16 @@ def main() -> int:
             banner("Done")
         return rc
     finally:
+        perf = perf_monitor.stop()
+        logger.info(
+            "Performance: "
+            f"peak RAM {perf['peak_rss_mb']}MB | "
+            f"min free RAM {perf['min_available_ram_mb']}MB | "
+            f"CPU avg {perf['avg_process_cpu_percent']}% "
+            f"(system {perf['avg_system_cpu_percent']}%) | "
+            f"GPU VRAM peak {perf['peak_gpu_vram_mb']}MB | "
+            f"samples {perf['samples']}"
+        )
         logger.close()
 
 

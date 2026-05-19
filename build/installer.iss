@@ -25,7 +25,7 @@ AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
-DisableDirPage=no
+DisableDirPage=yes
 DisableProgramGroupPage=yes
 OutputDir=Output
 OutputBaseFilename=DiveEdit-Setup-{#MyAppVersion}
@@ -38,13 +38,13 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 SetupIconFile=..\assets\diveedit.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
+InfoBeforeFile=setup-space-notice.txt
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"
-Name: "downloadmodels"; Description: "Prepare video tools, CUDA runtime, and AI speech model now (recommended)"; GroupDescription: "First-run setup:"
 
 [Files]
 ; Frozen app, output of `pyinstaller build/dive_edit.spec`.
@@ -53,6 +53,7 @@ Source: "..\dist\DiveEdit\*"; DestDir: "{app}"; Flags: ignoreversion recursesubd
 ; Bootstrap helpers, needed only during install / first run.
 Source: "bootstrap.ps1";        DestDir: "{app}\setup"; Flags: ignoreversion
 Source: "download_model.py";    DestDir: "{app}\setup"; Flags: ignoreversion
+Source: "setup-space-notice.txt"; DestDir: "{app}\setup"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -63,8 +64,7 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Filename: "powershell.exe"; \
   Parameters: "-ExecutionPolicy Bypass -NoProfile -File ""{app}\setup\bootstrap.ps1"" -InstallDir ""{app}"" -LogDir ""{commonappdata}\DiveEdit\logs"""; \
   StatusMsg: "Preparing DiveEdit runtime and AI speech model. First install may take several minutes..."; \
-  Flags: runhidden waituntilterminated; \
-  Tasks: downloadmodels
+  Flags: runhidden waituntilterminated
 
 ; Optional final launch.
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; \

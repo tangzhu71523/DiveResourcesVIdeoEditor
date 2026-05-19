@@ -5,6 +5,7 @@ strings, writes it to a script file (to avoid Windows command-line limits),
 and invokes ffmpeg with NVENC.
 """
 from __future__ import annotations
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -91,6 +92,50 @@ def _build_encoder_args(encoder_cfg: dict[str, Any]) -> tuple[list[str], list[st
         "-pix_fmt", "yuv420p",
     ]
     return [], output_args, "libx264"
+
+
+def _parse_logo_right_margin(x_expr: str) -> float:
+    m = re.fullmatch(r"\s*W\s*-\s*w\s*-\s*([0-9.]+)\s*", x_expr)
+    if not m:
+        return 8.0
+    return float(m.group(1))
+
+
+def _parse_logo_top(y_expr: str) -> float:
+    try:
+        return float(y_expr)
+    except (TypeError, ValueError):
+        return 8.0
+
+
+def _logo_overlay_filter_values(
+    base_xy: tuple[str, str],
+    base_height: int,
+    logo_overlay: dict[str, Any],
+    *,
+    target_w: int,
+    target_h: int,
+) -> tuple[str, str, int]:
+    base_right = _parse_logo_right_margin(base_xy[0])
+    base_top = _parse_logo_top(base_xy[1])
+    try:
+        pos_x = float(logo_overlay.get("position_x", 0.0))
+    except (TypeError, ValueError):
+        pos_x = 0.0
+    try:
+        pos_y = float(logo_overlay.get("position_y", 0.0))
+    except (TypeError, ValueError):
+        pos_y = 0.0
+    try:
+        scale = float(logo_overlay.get("scale", 1.0))
+    except (TypeError, ValueError):
+        scale = 1.0
+    scale = max(0.05, min(10.0, scale))
+
+    right_px = max(0, round((base_right + pos_x) * target_w / 1920.0))
+    top_px = max(0, round((base_top + pos_y) * target_h / 1080.0))
+    height_px = max(1, round(float(base_height) * scale * target_h / 1080.0))
+    return f"W-w-{right_px}", str(top_px), height_px
 
 
 _SIXTEEN_NINE = 16 / 9
@@ -246,6 +291,7 @@ def render(
     job_folder: Path | None = None,
     cover_overlay: dict[str, Any] | None = None,
     small_overlay: dict[str, Any] | None = None,
+    logo_overlay: dict[str, Any] | None = None,
     overlay_enabled: bool = True,
 ) -> RenderResult:
     assets_cfg = config.get("assets", {})
@@ -329,8 +375,13 @@ def render(
     ) if not use_ass else "null"
 
     overlay_renderer = overlay_renderer_from_config(overlay_cfg)
-    logo_x, logo_y = overlay_renderer.logo_xy_expr()
-    logo_height = overlay_renderer.logo_max_height()
+    logo_x, logo_y, logo_height = _logo_overlay_filter_values(
+        overlay_renderer.logo_xy_expr(),
+        overlay_renderer.logo_max_height(),
+        logo_overlay or {},
+        target_w=target_w,
+        target_h=target_h,
+    )
 
     # logo_path may be relative in config.yaml (preferred for portability).
     # Resolve against app_root() so the same config works in dev and frozen

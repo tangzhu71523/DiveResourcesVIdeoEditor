@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import os
 from collections.abc import Callable, Mapping
 
 _VRAM_PER_WORKER_GB = 1.2
 WORKERS_CAP = 8
 _WORKERS_CAP = WORKERS_CAP  # backward-compat alias
+CPU_WORKERS_CAP = 4
+_CPU_RAM_RESERVE_GB = 1.5
+_CPU_RAM_PER_WORKER_GB = 1.5
 
 
 def _workers_from_free_vram_mb(
@@ -41,6 +45,78 @@ def detect_optimal_workers() -> tuple[int, str]:
         return 1, f"nvidia-smi failed ({e}) -> CPU single worker"
 
 
+def _available_ram_gb() -> float | None:
+    try:
+        import psutil  # type: ignore
+        return float(psutil.virtual_memory().available) / (1024.0 ** 3)
+    except Exception:
+        return None
+
+
+def _total_ram_gb() -> float | None:
+    try:
+        import psutil  # type: ignore
+        return float(psutil.virtual_memory().total) / (1024.0 ** 3)
+    except Exception:
+        return None
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, ""))
+    except (TypeError, ValueError):
+        return default
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, ""))
+    except (TypeError, ValueError):
+        return default
+
+
+def detect_cpu_workers() -> tuple[int, str]:
+    """Pick a conservative CPU Whisper worker count.
+
+    Each worker loads its own model and CTranslate2 threads internally, so
+    RAM is the main safety gate. CPU cores are the second gate to leave the
+    UI and OS responsive.
+    """
+    logical = os.cpu_count() or 4
+    reserve_gb = max(1.0, _float_env("DIVE_CPU_RAM_RESERVE_GB", _CPU_RAM_RESERVE_GB))
+    ram_per_worker_gb = max(1.25, _float_env("DIVE_CPU_RAM_PER_WORKER_GB", _CPU_RAM_PER_WORKER_GB))
+    explicit_cpu_cap = "DIVE_CPU_WORKERS_CAP" in os.environ
+    cpu_parallel_allowed = os.environ.get("DIVE_CPU_ALLOW_PARALLEL") == "1"
+    cap = max(1, min(CPU_WORKERS_CAP, _int_env("DIVE_CPU_WORKERS_CAP", CPU_WORKERS_CAP)))
+    total_ram_gb = _total_ram_gb()
+    if total_ram_gb is not None:
+        if not (explicit_cpu_cap or cpu_parallel_allowed):
+            if total_ram_gb <= 18:
+                cap = 1
+            elif total_ram_gb <= 32:
+                cap = min(cap, 2)
+        elif total_ram_gb <= 10:
+            cap = min(cap, 2)
+    by_cpu = max(1, (logical - 2) // 4)
+    ram_gb = _available_ram_gb()
+    if ram_gb is None:
+        by_ram = 1 if logical <= 8 else 2
+        workers = max(1, min(cap, by_cpu, by_ram))
+        return (
+            workers,
+            f"CPU workers={workers} (logical={logical}, RAM unknown, cap={cap})",
+        )
+
+    by_ram = max(1, int((ram_gb - reserve_gb) // ram_per_worker_gb))
+    workers = max(1, min(cap, by_cpu, by_ram))
+    return (
+        workers,
+        f"CPU available RAM={ram_gb:.1f}GB total={total_ram_gb or 0:.1f}GB logical={logical} "
+        f"reserve={reserve_gb:.1f}GB per_worker={ram_per_worker_gb:.2f}GB "
+        f"cap={cap} -> workers={workers}",
+    )
+
+
 def select_pipeline_workers(
     *,
     env: Mapping[str, str | None] | None = None,
@@ -57,10 +133,16 @@ def select_pipeline_workers(
     cuda_status = status.get("DIVE_CUDA_STATUS")
     cudnn_status = status.get("DIVE_CUDNN_STATUS", "ok") or "ok"
     if force_cpu:
-        return 1, "force CPU requested"
+        workers, msg = detect_cpu_workers()
+        return workers, f"force CPU requested | {msg}"
     if cuda_status == "none":
-        return 1, "CUDA unavailable"
+        workers, msg = detect_cpu_workers()
+        return workers, f"CUDA unavailable | {msg}"
     if cudnn_status.startswith("missing"):
-        return 1, f"cuDNN unavailable: {cudnn_status}"
+        workers, msg = detect_cpu_workers()
+        return workers, f"cuDNN unavailable: {cudnn_status} | {msg}"
     auto_workers, msg = detector()
+    if msg.startswith("nvidia-smi not found") or msg.startswith("nvidia-smi failed"):
+        workers, cpu_msg = detect_cpu_workers()
+        return workers, f"{msg} | {cpu_msg}"
     return max(1, int(auto_workers or 1)), msg
